@@ -1,15 +1,17 @@
 import Fastify from "fastify";
-import FastifyMultipart from "@fastify/multipart";
+import fastifyMultipart from "@fastify/multipart";
 import assistantRoutes from "./routes/assistant";
 
 const fastify = Fastify({ logger: true });
 
-fastify.register(assistantRoutes);
-fastify.register(FastifyMultipart);
+fastify.register(fastifyMultipart, {
+  attachFieldsToBody: true,
+  limits: {
+    fileSize: 1000000,
+  },
+});
 
-// fastify.get("/", async (request, reply) => {
-//   return { hello: "world" };
-// });
+fastify.register(assistantRoutes);
 
 const start = async () => {
   try {

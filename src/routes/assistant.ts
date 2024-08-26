@@ -4,8 +4,8 @@ import {
   FastifyReply,
   FastifyRequest,
 } from "fastify";
-import path from "path";
 import fs from "fs";
+import path from "path";
 import { __dirname } from "../utils/utils";
 
 import {
@@ -14,7 +14,9 @@ import {
   createThread,
   createVector,
   streamRun,
+  uploadFilesToVectorStore,
   uploadJsonTrainingData,
+  updateAssistantWithVectorStore,
 } from "../services/openai";
 
 async function assistantRoutes(
@@ -81,33 +83,6 @@ async function assistantRoutes(
     }
   );
 
-  // fastify.post(
-  //   "/train-model",
-  //   async (request: FastifyRequest, reply: FastifyReply) => {
-  //     try {
-  //       const parts = request.files();
-  //       console.log("parts do arq", parts);
-
-  //       for await (const part of parts) {
-  //         if (part.file) {
-  //           console.log("processando file:", part.filename);
-  //           const filePath = path.join(__dirname, part.filename);
-
-  //           await fs.promises.writeFile(filePath, await part.toBuffer());
-
-  //           const result = await uploadJsonTrainingData(filePath);
-  //           reply.send({ message: "Arquivo enviado com sucesso", result });
-
-  //           fs.unlinkSync(filePath);
-  //         }
-  //       }
-  //     } catch (error) {
-  //       console.error("Erro ao processar o upload:", error);
-  //       reply.status(500).send({ error: "Erro ao processar o upload" });
-  //     }
-  //   }
-  // );
-
   fastify.post(
     "/train-model",
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -142,16 +117,103 @@ async function assistantRoutes(
     "/create-vector",
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const { name } = request.body as { name: string };
-
+        const { name } = request.body as { name: string; files: any };
         const result = await createVector(name);
+
         reply.send({ message: "Vetor criado com sucesso", result });
       } catch (err) {
-        console.log("Erro ao criar o vetor:", err);
         reply.status(500).send({ error: "Erro ao criar vetor" });
       }
     }
   );
+
+  fastify.post("/upload-files", async (request, reply) => {
+    try {
+      const { name, files } = request.body as { name: string; files: string[] };
+
+      if (!files || !Array.isArray(files)) {
+        return reply.status(400).send({
+          error: "Arquivos devem ser obrigatórios e ser um array de arquivos",
+        });
+      }
+
+      const vectorStore = await uploadFilesToVectorStore(name, files);
+
+      return reply.send({
+        message: "Arquivos enviados com sucesso",
+        vectorStore,
+      });
+    } catch (error) {
+      console.error("Erro ao subir arquivos", error);
+      return reply
+        .status(500)
+        .send({ error: "Ocorreu um erro ao enviar arquivos." });
+    }
+  });
+
+  fastify.post("/create-all-assistant", async (request, reply) => {
+    try {
+      const { name, instructions } = request.body as {
+        name: string;
+        instructions: string;
+      };
+
+      const files = request.body.files;
+
+      if (!files || Object.keys(files).length === 0) {
+        return reply.status(400).send({ error: "Nenhum arquivo foi enviado" });
+      }
+
+      const filePaths = [];
+      if (Array.isArray(files)) {
+        for (const fileKey in files) {
+          const file = files[fileKey];
+          const filePath = path.join(__dirname, "../uploads", file.filename);
+          const fileBuffer = await file.toBuffer();
+          await fs.promises.writeFile(filePath, fileBuffer);
+          filePaths.push(filePath);
+        }
+      } else {
+        const file = files;
+        const filePath = path.join(__dirname, "../uploads", file.filename);
+        const fileBuffer = await file.toBuffer();
+        await fs.promises.writeFile(filePath, fileBuffer);
+        filePaths.push(filePath);
+      }
+
+      const assistant = await createAssistant(name.value, instructions.value);
+      if (!assistant.id) {
+        return reply.status(500).send({ error: "Erro ao criar assistente" });
+      }
+
+      const vectorStore = await uploadFilesToVectorStore(
+        `${name.value}-vector-store`,
+        filePaths
+      );
+      if (!vectorStore.id) {
+        return reply.status(500).send({ error: "Falha ao criar o vetor" });
+      }
+
+      const updatedAssistant = await updateAssistantWithVectorStore(
+        assistant.id,
+        vectorStore.id
+      );
+      if (!updatedAssistant.id) {
+        return reply.status(500).send({
+          error: "Falha ao atualizar o assistente com armazenamento de vetores",
+        });
+      }
+
+      return reply.status(200).send({
+        message: "Assistente criado e atualizado com sucesso",
+        assistant: updatedAssistant,
+      });
+    } catch (err) {
+      return reply
+        .status(500)
+        .send({ error: `Erro ao criar assistente com os vetores: ${err}` });
+    }
+  });
 }
 
 export default assistantRoutes;
